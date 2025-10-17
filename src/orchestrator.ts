@@ -7,6 +7,9 @@
 
 import { Candle, AgentContext } from './types.js';
 import { IndicatorAgent, PatternAgent, TrendAgent, RiskAgent } from './agents/index.js';
+import MarketDataService from './services/marketData.js';
+
+const marketDataService = new MarketDataService();
 
 /**
  * Run the complete QuantLLM pipeline
@@ -120,4 +123,127 @@ function getOverallSentiment(ctx: AgentContext): 'Bullish' | 'Bearish' | 'Neutra
   if (bullish > bearish) return 'Bullish';
   if (bearish > bullish) return 'Bearish';
   return 'Neutral';
+}
+
+/**
+ * Run analysis on real market data for a given symbol
+ * @param symbol - Stock/crypto symbol (e.g., 'AAPL', 'BTC')
+ * @param interval - Time interval for data
+ * @param periods - Number of periods to analyze
+ * @returns Complete analysis with real market data
+ */
+export async function runRealTimeAnalysis(
+  symbol: string,
+  interval: 'daily' | '1min' | '5min' | '15min' | '30min' | '60min' = 'daily',
+  periods: number = 100
+) {
+  try {
+    // Fetch real market data
+    const candles = await marketDataService.getOHLCVWithPeriods(symbol, periods, interval);
+    
+    if (candles.length === 0) {
+      throw new Error(`No market data found for symbol: ${symbol}`);
+    }
+
+    // Run the complete analysis pipeline
+    const { ctx, narrative } = await runPipeline(candles);
+    
+    // Get market summary
+    const marketSummary = marketDataService.getMarketSummary(candles);
+    marketSummary.symbol = symbol.toUpperCase();
+    
+    // Format OHLCV data for display
+    const formattedData = marketDataService.formatOHLCVData(candles.slice(-10)); // Last 10 periods
+    
+    return {
+      symbol: symbol.toUpperCase(),
+      interval,
+      periods,
+      timestamp: new Date().toISOString(),
+      marketSummary,
+      analysis: ctx,
+      narrative,
+      recentData: formattedData,
+      dataPoints: candles.length
+    };
+  } catch (error) {
+    console.error(`Error in real-time analysis for ${symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get market data for a symbol without analysis
+ * @param symbol - Stock/crypto symbol
+ * @param interval - Time interval
+ * @param periods - Number of periods
+ * @returns Raw market data and summary
+ */
+export async function getMarketData(
+  symbol: string,
+  interval: 'daily' | '1min' | '5min' | '15min' | '30min' | '60min' = 'daily',
+  periods: number = 100
+) {
+  try {
+    const candles = await marketDataService.getOHLCVWithPeriods(symbol, periods, interval);
+    
+    if (candles.length === 0) {
+      throw new Error(`No market data found for symbol: ${symbol}`);
+    }
+
+    const marketSummary = marketDataService.getMarketSummary(candles);
+    marketSummary.symbol = symbol.toUpperCase();
+    
+    const formattedData = marketDataService.formatOHLCVData(candles);
+    
+    return {
+      symbol: symbol.toUpperCase(),
+      interval,
+      periods,
+      timestamp: new Date().toISOString(),
+      marketSummary,
+      data: formattedData,
+      dataPoints: candles.length
+    };
+  } catch (error) {
+    console.error(`Error fetching market data for ${symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Search for available symbols
+ * @param keywords - Search keywords
+ * @returns List of matching symbols
+ */
+export async function searchMarketSymbols(keywords: string) {
+  try {
+    return await marketDataService.searchSymbols(keywords);
+  } catch (error) {
+    console.error(`Error searching symbols for ${keywords}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get popular symbols by category
+ * @param category - Market category
+ * @returns List of popular symbols
+ */
+export function getPopularSymbols(category: 'stocks' | 'crypto' | 'forex' = 'stocks') {
+  return marketDataService.getPopularSymbols(category);
+}
+
+/**
+ * Validate if a symbol exists
+ * @param symbol - Symbol to validate
+ * @returns Symbol information or null
+ */
+export async function validateSymbol(symbol: string) {
+  try {
+    return await marketDataService.validateSymbol(symbol);
+  } catch (error) {
+    console.error(`Error validating symbol ${symbol}:`, error);
+    return null;
+  }
 }

@@ -10,10 +10,11 @@ import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { runPipeline, runAnalysis } from './src/orchestrator.js';
+import { runPipeline, runAnalysis, runRealTimeAnalysis, getMarketData, searchMarketSymbols, getPopularSymbols, validateSymbol } from './src/orchestrator.js';
 import { makeSyntheticSeries } from './src/utils/synthetic.js';
 import { runIndicatorAgent, runPatternAgent, runTrendAgent, runRiskAgent } from './src/agents/index.js';
 import { ChatService } from './src/chat.js';
+import N8NIntegrationService from './src/services/n8nIntegration.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -32,6 +33,9 @@ let isAnalyzing = false;
 
 // Chat service instance
 const chatService = new ChatService();
+
+// N8N integration service
+const n8nService = new N8NIntegrationService();
 
 /**
  * Generate fresh analysis data
@@ -204,6 +208,297 @@ app.get('/api/chat/status', (req, res) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: 'Failed to get chat status', details: errorMessage });
+  }
+});
+
+// OHLCV Market Data API endpoints
+app.get('/api/market/data/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { interval = 'daily', periods = '100' } = req.query;
+    
+    const periodsNum = parseInt(periods as string, 10);
+    if (isNaN(periodsNum) || periodsNum <= 0) {
+      return res.status(400).json({ error: 'Periods must be a positive number' });
+    }
+
+    const data = await getMarketData(symbol, interval as any, periodsNum);
+    res.json(data);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to fetch market data', 
+      details: errorMessage,
+      symbol: req.params.symbol 
+    });
+  }
+});
+
+app.get('/api/market/analysis/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { interval = 'daily', periods = '100' } = req.query;
+    
+    const periodsNum = parseInt(periods as string, 10);
+    if (isNaN(periodsNum) || periodsNum <= 0) {
+      return res.status(400).json({ error: 'Periods must be a positive number' });
+    }
+
+    const analysis = await runRealTimeAnalysis(symbol, interval as any, periodsNum);
+    
+    // Send to n8n workflow
+    const n8nResult = await n8nService.sendAnalysisToN8N(
+      analysis, 
+      'api_call',
+      {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress,
+      }
+    );
+    
+    // Add n8n result to response
+    const response = {
+      ...analysis,
+      n8n: n8nResult,
+    };
+    
+    res.json(response);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to run market analysis', 
+      details: errorMessage,
+      symbol: req.params.symbol 
+    });
+  }
+});
+
+app.get('/api/market/search', async (req, res) => {
+  try {
+    const { keywords } = req.query;
+    if (!keywords || typeof keywords !== 'string') {
+      return res.status(400).json({ error: 'Keywords parameter is required' });
+    }
+
+    const results = await searchMarketSymbols(keywords);
+    res.json({ keywords, results, timestamp: new Date().toISOString() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to search symbols', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.get('/api/market/popular/:category', (req, res) => {
+  try {
+    const { category = 'stocks' } = req.params;
+    
+    if (!['stocks', 'crypto', 'forex'].includes(category)) {
+      return res.status(400).json({ 
+        error: 'Invalid category. Must be: stocks, crypto, or forex' 
+      });
+    }
+
+    const symbols = getPopularSymbols(category as any);
+    res.json({ 
+      category, 
+      symbols, 
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to get popular symbols', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.get('/api/market/popular', (req, res) => {
+  try {
+    const symbols = getPopularSymbols('stocks');
+    res.json({ 
+      category: 'stocks', 
+      symbols, 
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to get popular symbols', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.get('/api/market/validate/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const result = await validateSymbol(symbol);
+    
+    res.json({ 
+      symbol: symbol.toUpperCase(),
+      valid: result !== null,
+      info: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to validate symbol', 
+      details: errorMessage,
+      symbol: req.params.symbol 
+    });
+  }
+});
+
+app.get('/api/market/ohlcv/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { interval = 'daily', periods = '100', format = 'json' } = req.query;
+    
+    const periodsNum = parseInt(periods as string, 10);
+    if (isNaN(periodsNum) || periodsNum <= 0) {
+      return res.status(400).json({ error: 'Periods must be a positive number' });
+    }
+
+    const data = await getMarketData(symbol, interval as any, periodsNum);
+    
+    if (format === 'csv') {
+      // CSV format for downloads
+      const csvHeader = 'Date,Open,High,Low,Close,Volume,Change\n';
+      const csvData = data.data.map((row: any) => 
+        `${row.date},${row.open},${row.high},${row.low},${row.close},${row.volume},${row.change}`
+      ).join('\n');
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${symbol}_ohlcv.csv"`);
+      res.send(csvHeader + csvData);
+    } else {
+      res.json(data);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to fetch OHLCV data', 
+      details: errorMessage,
+      symbol: req.params.symbol 
+    });
+  }
+});
+
+// N8N Integration API endpoints
+app.post('/api/n8n/analyze', async (req, res) => {
+  try {
+    const { symbol, interval = 'daily', periods = 100, trigger = 'manual' } = req.body;
+    
+    if (!symbol) {
+      return res.status(400).json({ error: 'Symbol is required' });
+    }
+
+    // Run analysis
+    const analysis = await runRealTimeAnalysis(symbol, interval, periods);
+    
+    // Send to n8n workflow
+    const n8nResult = await n8nService.sendAnalysisToN8N(
+      analysis, 
+      trigger,
+      {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip || req.connection.remoteAddress,
+      }
+    );
+    
+    res.json({
+      success: true,
+      analysis,
+      n8n: n8nResult,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to analyze and send to n8n', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.get('/api/n8n/status', (req, res) => {
+  try {
+    const status = n8nService.getStatus();
+    res.json(status);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to get n8n status', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.post('/api/n8n/test', async (req, res) => {
+  try {
+    const result = await n8nService.testConnection();
+    res.json(result);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to test n8n connection', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.post('/api/n8n/webhook', async (req, res) => {
+  try {
+    const { url } = req.body;
+    
+    if (!url) {
+      return res.status(400).json({ error: 'Webhook URL is required' });
+    }
+
+    const success = n8nService.updateWebhookUrl(url);
+    
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Webhook URL updated successfully',
+        url: url
+      });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        message: 'Invalid webhook URL format' 
+      });
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to update webhook URL', 
+      details: errorMessage 
+    });
+  }
+});
+
+app.post('/api/n8n/notify', async (req, res) => {
+  try {
+    const { message, level = 'info', metadata = {} } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const result = await n8nService.sendNotification(message, level, metadata);
+    res.json(result);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ 
+      error: 'Failed to send notification', 
+      details: errorMessage 
+    });
   }
 });
 
