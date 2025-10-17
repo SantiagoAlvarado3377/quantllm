@@ -71,7 +71,7 @@ Or type "help" for more information!`
   }t helps users explore different trading categories
  */
 
-import { runPipeline, runAnalysis } from './orchestrator.js';
+import { runPipeline, runAnalysis, runRealTimeAnalysis, getPopularSymbols, validateSymbol } from './orchestrator.js';
 import { makeSyntheticSeries } from './utils/synthetic.js';
 import { runIndicatorAgent, runPatternAgent, runTrendAgent, runRiskAgent } from './agents/index.js';
 import { GeminiService } from './gemini.js';
@@ -488,26 +488,123 @@ What would you like to explore next?`
   }
 
   private async runAnalysisForAsset(category: TradingCategory, asset: string): Promise<any> {
-    // Generate synthetic data tailored to the specific asset
-    const candles = this.generateAssetData(category, asset);
-    
-    // Run full pipeline analysis
-    const { ctx, narrative } = await runPipeline(candles);
-    const jsonOutput = await runAnalysis(candles);
+    try {
+      // Try to get real market data first
+      const symbolMapping = this.getSymbolForAsset(category, asset);
+      
+      if (symbolMapping) {
+        console.log(`🔍 Fetching real market data for ${symbolMapping}...`);
+        try {
+          const realAnalysis = await runRealTimeAnalysis(symbolMapping, 'daily', 100);
+          console.log(`✅ Real market data analysis complete for ${symbolMapping}`);
+          
+          return {
+            category: category.name,
+            asset: asset,
+            symbol: symbolMapping,
+            isRealData: true,
+            narrative: realAnalysis.narrative,
+            data: realAnalysis.analysis,
+            marketSummary: realAnalysis.marketSummary,
+            recentData: realAnalysis.recentData?.slice(-5), // Last 5 data points
+            timestamp: new Date().toISOString()
+          };
+        } catch (apiError) {
+          const errorMessage = apiError instanceof Error ? apiError.message : 'Unknown error';
+          console.warn(`⚠️ Real data failed for ${symbolMapping}, falling back to synthetic:`, errorMessage);
+        }
+      }
+      
+      // Fallback to synthetic data if real data fails
+      console.log(`📊 Using synthetic data for ${asset}...`);
+      const candles = this.generateAssetData(category, asset);
+      
+      // Run full pipeline analysis
+      const { ctx, narrative } = await runPipeline(candles);
+      const jsonOutput = await runAnalysis(candles);
 
-    return {
-      category: category.name,
-      asset: asset,
-      narrative,
-      data: {
-        indicator: ctx.indicator,
-        pattern: ctx.pattern,
-        trend: ctx.trend,
-        risk: ctx.risk,
-        summary: jsonOutput.summary
-      },
-      timestamp: new Date().toISOString()
-    };
+      return {
+        category: category.name,
+        asset: asset,
+        symbol: symbolMapping || 'SYNTHETIC',
+        isRealData: false,
+        narrative,
+        data: {
+          indicator: ctx.indicator,
+          pattern: ctx.pattern,
+          trend: ctx.trend,
+          risk: ctx.risk,
+          summary: jsonOutput.summary
+        },
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error(`❌ Analysis failed for ${asset}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Map asset names to trading symbols for real market data
+   */
+  private getSymbolForAsset(category: TradingCategory, asset: string): string | null {
+    const assetLower = asset.toLowerCase();
+    
+    switch (category.id) {
+      case 'crypto':
+        if (assetLower.includes('bitcoin') || assetLower.includes('btc')) return 'BTC';
+        if (assetLower.includes('ethereum') || assetLower.includes('eth')) return 'ETH';
+        if (assetLower.includes('cardano') || assetLower.includes('ada')) return 'ADA';
+        if (assetLower.includes('solana') || assetLower.includes('sol')) return 'SOL';
+        if (assetLower.includes('polkadot') || assetLower.includes('dot')) return 'DOT';
+        if (assetLower.includes('litecoin') || assetLower.includes('ltc')) return 'LTC';
+        if (assetLower.includes('ripple') || assetLower.includes('xrp')) return 'XRP';
+        if (assetLower.includes('dogecoin') || assetLower.includes('doge')) return 'DOGE';
+        if (assetLower.includes('polygon') || assetLower.includes('matic')) return 'MATIC';
+        if (assetLower.includes('avalanche') || assetLower.includes('avax')) return 'AVAX';
+        break;
+        
+      case 'stocks':
+        if (assetLower.includes('apple') || assetLower.includes('aapl')) return 'AAPL';
+        if (assetLower.includes('google') || assetLower.includes('googl')) return 'GOOGL';
+        if (assetLower.includes('microsoft') || assetLower.includes('msft')) return 'MSFT';
+        if (assetLower.includes('amazon') || assetLower.includes('amzn')) return 'AMZN';
+        if (assetLower.includes('tesla') || assetLower.includes('tsla')) return 'TSLA';
+        if (assetLower.includes('nvidia') || assetLower.includes('nvda')) return 'NVDA';
+        if (assetLower.includes('meta') || assetLower.includes('facebook')) return 'META';
+        if (assetLower.includes('netflix') || assetLower.includes('nflx')) return 'NFLX';
+        if (assetLower.includes('amd')) return 'AMD';
+        if (assetLower.includes('intel') || assetLower.includes('intc')) return 'INTC';
+        break;
+        
+      case 'forex':
+        if (assetLower.includes('eur') && assetLower.includes('usd')) return 'EURUSD';
+        if (assetLower.includes('gbp') && assetLower.includes('usd')) return 'GBPUSD';
+        if (assetLower.includes('usd') && assetLower.includes('jpy')) return 'USDJPY';
+        if (assetLower.includes('usd') && assetLower.includes('chf')) return 'USDCHF';
+        if (assetLower.includes('aud') && assetLower.includes('usd')) return 'AUDUSD';
+        if (assetLower.includes('usd') && assetLower.includes('cad')) return 'USDCAD';
+        if (assetLower.includes('nzd') && assetLower.includes('usd')) return 'NZDUSD';
+        break;
+        
+      case 'commodities':
+        if (assetLower.includes('gold')) return 'XAUUSD';
+        if (assetLower.includes('silver')) return 'XAGUSD';
+        if (assetLower.includes('oil') && assetLower.includes('crude')) return 'USOIL';
+        if (assetLower.includes('oil') && assetLower.includes('brent')) return 'UKOIL';
+        if (assetLower.includes('copper')) return 'COPPER';
+        break;
+        
+      case 'indices':
+        if (assetLower.includes('s&p') || assetLower.includes('sp500')) return 'SPY';
+        if (assetLower.includes('nasdaq')) return 'QQQ';
+        if (assetLower.includes('dow') || assetLower.includes('djia')) return 'DIA';
+        if (assetLower.includes('russell')) return 'IWM';
+        if (assetLower.includes('ftse')) return 'FTSE';
+        break;
+    }
+    
+    return null;
   }
 
   private generateAssetData(category: TradingCategory, asset: string) {
@@ -589,15 +686,30 @@ What would you like to explore next?`
 
   private formatAssetAnalysisResponse(category: TradingCategory, asset: string, analysis: any): string {
     const data = analysis.data;
+    const dataSourceIcon = analysis.isRealData ? '📊' : '🎲';
+    const dataSourceText = analysis.isRealData ? 'Real Market Data' : 'Synthetic Data';
+    const symbol = analysis.symbol || 'N/A';
+    
+    let marketInfo = '';
+    if (analysis.isRealData && analysis.marketSummary) {
+      const ms = analysis.marketSummary;
+      marketInfo = `\n💰 **Market Info** (${symbol}):
+• Current Price: $${ms.currentPrice?.toFixed(4)}
+• Change: ${ms.change >= 0 ? '+' : ''}${ms.change?.toFixed(4)} (${ms.changePercent?.toFixed(2)}%)
+• Volume: ${ms.volume?.toLocaleString()}
+• 52W High/Low: $${ms.high52w?.toFixed(2)} / $${ms.low52w?.toFixed(2)}\n`;
+    }
     
     return `${category.icon} **${asset} Analysis Complete!**
 
+${dataSourceIcon} **Data Source**: ${dataSourceText}${analysis.isRealData ? ` (Symbol: ${symbol})` : ''}
+${marketInfo}
 🎯 **Asset**: ${asset} (${category.name})
 📊 **Analysis Summary**: ${analysis.narrative}
 
 💡 **Key Metrics**:
 • **RSI**: ${data.indicator.rsi?.toFixed(1)} - ${data.indicator.regime} market
-• **Pattern**: ${data.pattern.pattern} (Strength: ${data.pattern.strength || 'N/A'})
+• **Pattern**: ${data.pattern.pattern} (Strength: ${(data.pattern.strength * 100)?.toFixed(1)}%)
 • **Trend**: ${data.trend.trend} 
 • **Risk Multiplier**: ${data.risk.rMultiplier}x
 
@@ -605,6 +717,8 @@ What would you like to explore next?`
 - **Overall Sentiment**: ${data.summary.overallSentiment}
 - **Bullish Signals**: ${data.summary.bullishSignals}
 - **Bearish Signals**: ${data.summary.bearishSignals}
+
+${analysis.isRealData ? '🔄 **Live Data**: This analysis uses real-time market data from Alpha Vantage!' : '⚠️ **Note**: Real market data unavailable, using high-quality synthetic data.'}
 
 🎯 **Ready for next analysis?**
 Type "analyze another ${category.name.toLowerCase()}" for more ${category.name} assets, or "categories" to explore different markets!`;
