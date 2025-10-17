@@ -5,6 +5,7 @@
  * Express server providing web interface for QuantLLM analysis
  */
 
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
@@ -12,6 +13,7 @@ import { dirname, join } from 'path';
 import { runPipeline, runAnalysis } from './src/orchestrator.js';
 import { makeSyntheticSeries } from './src/utils/synthetic.js';
 import { runIndicatorAgent, runPatternAgent, runTrendAgent, runRiskAgent } from './src/agents/index.js';
+import { ChatService } from './src/chat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -27,6 +29,9 @@ app.use(express.static(join(__dirname, 'public')));
 // Store latest analysis for dashboard
 let latestAnalysis: any = null;
 let isAnalyzing = false;
+
+// Chat service instance
+const chatService = new ChatService();
 
 /**
  * Generate fresh analysis data
@@ -128,16 +133,88 @@ app.get('/api/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    agents: ['indicator', 'pattern', 'trend', 'risk']
+    agents: ['indicator', 'pattern', 'trend', 'risk'],
+    chat: 'enabled'
   });
+});
+
+// Chat API endpoints
+app.get('/api/chat/messages', (req, res) => {
+  try {
+    const messages = chatService.getMessages();
+    res.json({ messages, timestamp: new Date().toISOString() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to get chat messages', details: errorMessage });
+  }
+});
+
+app.post('/api/chat/message', async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required and must be a string' });
+    }
+
+    const response = await chatService.processUserMessage(message.trim());
+    const allMessages = chatService.getMessages();
+    
+    res.json({ 
+      response,
+      messages: allMessages,
+      currentCategory: chatService.getCurrentCategory(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to process chat message', details: errorMessage });
+  }
+});
+
+app.get('/api/chat/categories', (req, res) => {
+  try {
+    const categories = chatService.getCategories();
+    res.json({ categories, timestamp: new Date().toISOString() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to get categories', details: errorMessage });
+  }
+});
+
+app.post('/api/chat/clear', (req, res) => {
+  try {
+    chatService.clearChat();
+    const messages = chatService.getMessages();
+    res.json({ messages, timestamp: new Date().toISOString() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to clear chat', details: errorMessage });
+  }
+});
+
+app.get('/api/chat/status', (req, res) => {
+  try {
+    res.json({ 
+      geminiEnabled: chatService.isGeminiEnabled(),
+      currentCategory: chatService.getCurrentCategory(),
+      selectedAsset: chatService.getSelectedAsset(),
+      chatState: chatService.getChatState(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to get chat status', details: errorMessage });
+  }
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 QuantLLM Web Server running on http://localhost:${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
-  console.log(`🔗 API: http://localhost:${PORT}/api/analysis`);
+  console.log(`� Chat Interface: http://localhost:${PORT} (integrated)`);
+  console.log(`�🔗 API: http://localhost:${PORT}/api/analysis`);
   console.log(`🤖 Individual agents: http://localhost:${PORT}/api/agents/{indicator|pattern|trend|risk}`);
+  console.log(`💭 Chat API: http://localhost:${PORT}/api/chat/messages`);
   
   // Generate initial analysis
   generateAnalysis().then(() => {
