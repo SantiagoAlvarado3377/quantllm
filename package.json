@@ -1,13 +1,38 @@
 {
   "name": "quantllm",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Multi-agent quant trading storyteller (Indicator/Pattern/Trend/Risk) with optional LLM risk tuning",
+  "main": "dist/index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx watch quantllm.ts",
+    "start": "node dist/quantllm.js",
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"(add eslint later)\"",
+    "web": "tsx server.ts",
+    "web:dev": "tsx watch server.ts"
   },
-  "keywords": [],
+  "keywords": [
+    "quant",
+    "trading",
+    "ai",
+    "agents",
+    "typescript"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "dependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "openai": "^4.67.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
 }
