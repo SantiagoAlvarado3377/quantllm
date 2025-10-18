@@ -16,6 +16,7 @@ export interface GeminiConfig {
 export class GeminiService {
   private genAI: GoogleGenerativeAI | null = null;
   private model: any = null;
+  private modelId: string = '';
   private systemPrompt: string;
 
   constructor(config: GeminiConfig = {}) {
@@ -25,13 +26,19 @@ export class GeminiService {
       throw new Error('GEMINI_API_KEY is required. Please set your Gemini Pro API key in the environment variables.');
     }
 
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ 
-      model: config.model || 'gemini-1.5-flash'  // Using Flash model for broader compatibility
-    });
+  // Initialize client; SDK will use its default API version. We'll handle model fallbacks ourselves.
+  this.genAI = new GoogleGenerativeAI(apiKey);
+
+    const preferredModel = config.model || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    this.setModel(preferredModel);
 
     this.systemPrompt = config.systemPrompt || this.getDefaultSystemPrompt();
     console.log('🤖 Gemini Pro AI initialized successfully');
+  }
+
+  private setModel(modelId: string) {
+    this.modelId = modelId;
+    this.model = this.genAI!.getGenerativeModel({ model: modelId });
   }
 
   private getDefaultSystemPrompt(): string {
@@ -97,12 +104,11 @@ CURRENT CONTEXT: User is interacting with a sophisticated web-based trading anal
     
     try {
       const prompt = this.buildPrompt(userMessage, context);
-      const result = await this.model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
+      return await this.tryGenerateWithFallback(prompt, () => this.getFallbackResponse(userMessage, context));
     } catch (error) {
       console.error('Gemini API error:', error);
-      throw new Error(`AI service temporarily unavailable: ${error}`);
+      // Return a graceful fallback response instead of throwing
+      return this.getFallbackResponse(userMessage, context);
     }
   }
 
@@ -208,13 +214,47 @@ Provide a conversational explanation focusing on:
 
 Keep it educational, engaging, and use relevant emojis. Be encouraging and help the user learn. Max 300 words.`;
 
-      const result = await this.model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
+      return await this.tryGenerateWithFallback(prompt, () => this.getBasicAnalysisExplanation(analysisData, asset));
     } catch (error) {
       console.error('Gemini analysis explanation error:', error);
-      throw new Error(`Failed to generate AI analysis explanation: ${error}`);
+      // Fall back to deterministic explanation
+      return this.getBasicAnalysisExplanation(analysisData, asset);
     }
+  }
+
+  // Try generation and automatically fall back across supported models and API versions if needed.
+  private async tryGenerateWithFallback(prompt: string, fallback: () => string): Promise<string> {
+    const candidates = [
+      this.modelId || 'gemini-1.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-pro-latest',
+      'gemini-1.5-flash-8b',
+      'gemini-1.5-pro'
+    ];
+
+    let lastError: any = null;
+    for (const id of candidates) {
+      try {
+        if (id !== this.modelId) {
+          this.setModel(id);
+        }
+        const result = await this.model.generateContent(prompt);
+        const response = await result.response;
+        return response.text();
+      } catch (err: any) {
+        lastError = err;
+        const msg = `${err?.status || ''} ${err?.statusText || ''} ${String(err)}`;
+        // On 404 or model-not-found errors, continue to next fallback model
+        if (msg.includes('404') || msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('supported')) {
+          continue;
+        }
+        // On other errors (e.g., network), break and return fallback
+        break;
+      }
+    }
+
+    console.warn('Gemini generation failed across models, using fallback. Last error:', lastError);
+    return fallback();
   }
 
   private getBasicAnalysisExplanation(analysisData: any, asset: string): string {

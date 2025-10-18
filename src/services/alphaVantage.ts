@@ -6,6 +6,7 @@
 
 import axios from 'axios';
 import { Candle } from '../types.js';
+import { makeSyntheticSeries } from '../utils/synthetic.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -31,6 +32,7 @@ export interface AlphaVantageResponse {
   'Time Series (Daily)'?: AlphaVantageTimeSeriesData;
   'Error Message'?: string;
   'Note'?: string;
+  'Information'?: string; // For rate limit messages
 }
 
 export interface AlphaVantageIntradayResponse {
@@ -44,6 +46,7 @@ export interface AlphaVantageIntradayResponse {
   };
   'Error Message'?: string;
   'Note'?: string;
+  'Information'?: string; // For rate limit messages
   [key: string]: AlphaVantageTimeSeriesData | any;
 }
 
@@ -66,11 +69,24 @@ export interface AlphaVantageCryptoData {
 export class AlphaVantageService {
   private apiKey: string;
   private baseUrl = 'https://www.alphavantage.co/query';
+  private useMockData: boolean;
 
   constructor() {
     this.apiKey = process.env.ALPHA_VANTAGE_API_KEY || '';
-    if (!this.apiKey) {
-      throw new Error('ALPHA_VANTAGE_API_KEY is required in environment variables');
+    
+    // Check if API key is empty or is a placeholder value
+    const isPlaceholder = !this.apiKey || 
+                         this.apiKey === 'your_alpha_vantage_api_key_here' ||
+                         this.apiKey.includes('your_') ||
+                         this.apiKey.length < 10;
+    
+    this.useMockData = isPlaceholder;
+    
+    if (this.useMockData) {
+      console.warn('⚠️  ALPHA_VANTAGE_API_KEY not found or invalid - using mock data for development');
+      console.warn('   To use real market data, get a free API key from: https://www.alphavantage.co/support/#api-key');
+    } else {
+      console.log('✅ Alpha Vantage API key found - using real market data');
     }
   }
 
@@ -78,6 +94,11 @@ export class AlphaVantageService {
    * Fetch daily OHLCV data for a given symbol
    */
   async getDailyOHLCV(symbol: string, outputSize: 'compact' | 'full' = 'compact'): Promise<Candle[]> {
+    // Return mock data if no API key is available
+    if (this.useMockData) {
+      return this.generateMockData(symbol, outputSize === 'full' ? 500 : 100, 'daily');
+    }
+
     try {
       const response = await axios.get<AlphaVantageResponse>(this.baseUrl, {
         params: {
@@ -94,6 +115,12 @@ export class AlphaVantageService {
 
       if (response.data['Note']) {
         throw new Error(`Alpha Vantage API Rate Limit: ${response.data['Note']}`);
+      }
+
+      // Check for rate limit message in "Information" field
+      if (response.data['Information'] && response.data['Information'].includes('rate limit')) {
+        console.warn('⚠️  Alpha Vantage API rate limit reached - falling back to mock data');
+        return this.generateMockData(symbol, outputSize === 'full' ? 500 : 100, 'daily');
       }
 
       const timeSeries = response.data['Time Series (Daily)'];
@@ -116,6 +143,11 @@ export class AlphaVantageService {
     interval: '1min' | '5min' | '15min' | '30min' | '60min' = '5min',
     outputSize: 'compact' | 'full' = 'compact'
   ): Promise<Candle[]> {
+    // Return mock data if no API key is available
+    if (this.useMockData) {
+      return this.generateMockData(symbol, outputSize === 'full' ? 1000 : 200, 'intraday');
+    }
+
     try {
       const response = await axios.get<AlphaVantageIntradayResponse>(this.baseUrl, {
         params: {
@@ -135,6 +167,12 @@ export class AlphaVantageService {
         throw new Error(`Alpha Vantage API Rate Limit: ${response.data['Note']}`);
       }
 
+      // Check for rate limit message in "Information" field
+      if (response.data['Information'] && response.data['Information'].includes('rate limit')) {
+        console.warn('⚠️  Alpha Vantage API rate limit reached - falling back to mock data');
+        return this.generateMockData(symbol, outputSize === 'full' ? 1000 : 200, 'intraday');
+      }
+
       const timeSeriesKey = `Time Series (${interval})`;
       const timeSeries = response.data[timeSeriesKey];
       if (!timeSeries) {
@@ -152,6 +190,11 @@ export class AlphaVantageService {
    * Fetch cryptocurrency daily data
    */
   async getCryptoDailyOHLCV(symbol: string, market: string = 'USD'): Promise<Candle[]> {
+    // Return mock data if no API key is available
+    if (this.useMockData) {
+      return this.generateMockData(symbol, 100, 'daily');
+    }
+
     try {
       const response = await axios.get(this.baseUrl, {
         params: {
@@ -168,6 +211,12 @@ export class AlphaVantageService {
 
       if (response.data['Note']) {
         throw new Error(`Alpha Vantage API Rate Limit: ${response.data['Note']}`);
+      }
+
+      // Check for rate limit message in "Information" field
+      if (response.data['Information'] && response.data['Information'].includes('rate limit')) {
+        console.warn('⚠️  Alpha Vantage API rate limit reached - falling back to mock data');
+        return this.generateMockData(symbol, 100, 'daily');
       }
 
       const timeSeries = response.data['Time Series (Digital Currency Daily)'];
@@ -232,6 +281,19 @@ export class AlphaVantageService {
    * Get available stock symbols search
    */
   async searchSymbols(keywords: string): Promise<any[]> {
+    // Return mock data if no API key is available
+    if (this.useMockData) {
+      return [
+        { '1. symbol': 'AAPL', '2. name': 'Apple Inc.' },
+        { '1. symbol': 'GOOGL', '2. name': 'Alphabet Inc.' },
+        { '1. symbol': 'MSFT', '2. name': 'Microsoft Corporation' },
+        { '1. symbol': 'TSLA', '2. name': 'Tesla Inc.' }
+      ].filter(item => 
+        item['1. symbol'].toLowerCase().includes(keywords.toLowerCase()) ||
+        item['2. name'].toLowerCase().includes(keywords.toLowerCase())
+      );
+    }
+
     try {
       const response = await axios.get(this.baseUrl, {
         params: {
@@ -252,6 +314,22 @@ export class AlphaVantageService {
    * Get current quote for a symbol
    */
   async getQuote(symbol: string): Promise<any> {
+    // Return mock data if no API key is available
+    if (this.useMockData) {
+      return {
+        '01. symbol': symbol,
+        '02. open': '150.00',
+        '03. high': '155.00',
+        '04. low': '148.00',
+        '05. price': '152.50',
+        '06. volume': '1000000',
+        '07. latest trading day': new Date().toISOString().split('T')[0],
+        '08. previous close': '151.00',
+        '09. change': '1.50',
+        '10. change percent': '0.99%'
+      };
+    }
+
     try {
       const response = await axios.get(this.baseUrl, {
         params: {
@@ -266,6 +344,21 @@ export class AlphaVantageService {
       console.error('Error fetching quote:', error);
       throw error;
     }
+  }
+
+  /**
+   * Generate mock data for development/testing when API key is not available
+   */
+  private generateMockData(symbol: string, count: number, type: 'daily' | 'intraday' = 'daily'): Candle[] {
+    console.log(`📊 Generating mock ${type} data for ${symbol} (${count} candles)`);
+    
+    // Use synthetic data generator with some variation based on symbol
+    const basePrice = symbol === 'AAPL' ? 150 : 
+                     symbol === 'GOOGL' ? 100 : 
+                     symbol === 'MSFT' ? 300 : 
+                     symbol === 'TSLA' ? 200 : 100;
+    
+    return makeSyntheticSeries(count, basePrice);
   }
 }
 
